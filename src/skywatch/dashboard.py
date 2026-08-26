@@ -505,7 +505,7 @@ def _skill_curve_chart(cfg: Config, skill: SkillSummary, models: list[str]) -> s
     series = {
         m: [p for p in pts if p.n >= _CURVE_MIN_N]
         for m, pts in skill.curve.items()
-        if m in models or m == CLIMATOLOGY_NAME
+        if m in models or (m == CLIMATOLOGY_NAME and not _tmax_provisional(skill, models))
     }
     series = {m: pts for m, pts in series.items() if pts}
     if sum(len(p) for p in series.values()) < 2:
@@ -547,18 +547,22 @@ def _skill_curve_chart(cfg: Config, skill: SkillSummary, models: list[str]) -> s
 _CURVE_MIN_N = 4
 
 
-def _clim_note(skill: SkillSummary, models: list[str]) -> str:
-    """The 'beats climatology to ~N days' claim — only once ratings are no longer
-    provisional. Before that the baseline is a few days of (possibly anomalous)
-    weather and the crossing point is noise."""
+def _tmax_provisional(skill: SkillSummary, models: list[str]) -> bool:
     tmax = "temperature_2m_max"
-    provisional = any(
+    return any(
         skill.by_model[m].variables[tmax].overall.provisional
         for m in models if tmax in skill.by_model[m].variables
     )
-    if provisional:
-        return ("The climatology comparison is provisional until two weeks of days "
-                "have verified; no crossing point is claimed yet.")
+
+
+def _clim_note(skill: SkillSummary, models: list[str]) -> str:
+    """The 'beats climatology to ~N days' claim — only once ratings are no longer
+    provisional. Before that the baseline is a few days of (possibly anomalous)
+    weather and the crossing point is noise, so neither the line nor the claim
+    is shown."""
+    if _tmax_provisional(skill, models):
+        return ("The climatology baseline (dashed) and the crossing point appear once "
+                "two weeks of days have verified.")
     bits = []
     for m in models:
         if m not in skill.beats_climatology_until_h:
