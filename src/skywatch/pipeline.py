@@ -4,13 +4,15 @@ from __future__ import annotations
 
 import json
 import subprocess
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
 from rich.table import Table
 
 from skywatch import console, output
+from skywatch.alert_state import select_pushes, severity_rank
+from skywatch.cache import DiskCache
 from skywatch.config import Config
 from skywatch.digest import build_digest
 from skywatch.features.anomaly import daily_anomalies
@@ -23,7 +25,7 @@ from skywatch.features.spread import ensemble_stats, event_probability
 from skywatch.features.thresholds import anomaly_events, threshold_events
 from skywatch.features.trends import forecast_trends
 from skywatch.features.vortex import analyse_vortex
-from skywatch.models import Alert
+from skywatch.models import Alert, Severity
 from skywatch.notify import push_alerts
 from skywatch.sources import build_sources
 from skywatch.state import StateDB
@@ -45,51 +47,160 @@ def fetch_only(cfg: Config, *, refresh: bool = False, json_out: bool = False) ->
         console.err().print("[green]Fetched:[/green]", summary)
 
 
-def run_cycle(
-    cfg: Config, *, use_llm: bool = True, refresh: bool = False, json_out: bool = False
-) -> None:
-    """The full one-shot cycle."""
-    run_at = datetime.now(UTC)
+class Snapshot:
+    """What one snapshot produced; the briefing step builds on it."""
+
+    def __init__(self, run_at: datetime, run_dir: Path, digest: dict[str, Any],
+                 features: dict[str, Any]) -> None:
+        self.run_at = run_at
+        self.run_dir = run_dir
+        self.digest = digest
+        self.features = features
+
+
+def take_snapshot(
+    cfg: Config,
+    *,
+    refresh: bool = False,
+    model_inits: dict[str, datetime] | None = None,
+    run_at: datetime | None = None,
+) -> Snapshot:
+    """Fetch -> features -> digest -> outputs -> state. No LLM.
+
+    alerts.json holds the mechanical (fact-only) alerts; the dashboard carries
+    the most recent briefing forward, stamped with its own time.
+    """
+    from skywatch.alerts import mechanical_alerts
+
+    run_at = run_at or datetime.now(UTC)
     data = _fetch_all(cfg, refresh=refresh)
     features = _compute_features(cfg, data, run_at)
     digest = features["digest"]
 
     run_dir = output.make_run_dir(cfg.output_dir, run_at)
     output.write_digest(run_dir, digest)
+    alerts = mechanical_alerts(features["events"], features["enso"], features["vortex"])
+    output.write_alerts(run_dir, alerts, mode="mechanical", run_at=run_at)
 
-    # LLM layer — never fatal.
-    if use_llm:
-        from skywatch import llm
-
-        briefing_md, llm_ok = llm.write_briefing(cfg, digest)
-        alerts, alert_mode = llm.write_alerts(
-            cfg, digest, features["events"], features["enso"], features["vortex"]
-        )
-    else:
-        from skywatch.alerts import mechanical_alerts
-
-        briefing_md = "# Briefing skipped (--no-llm)\n\nSee digest.json.\n"
-        llm_ok = False
-        alerts = mechanical_alerts(features["events"], features["enso"], features["vortex"])
-        alert_mode = "mechanical"
-
+    db = StateDB(cfg.state_db)
+    briefing_md, briefing_at = _carried_briefing(cfg, db)
     output.write_briefing(run_dir, briefing_md)
-    output.write_alerts(run_dir, alerts, mode=alert_mode, run_at=run_at)
-
     _render_dashboard(cfg, run_dir, digest, briefing_md, alerts,
-                      grid=features["grid_summary"], skill=features["skill_summary"])
+                      grid=features["grid_summary"], skill=features["skill_summary"],
+                      briefing_at=briefing_at)
     output.update_latest(cfg.output_dir, run_dir)
 
     # Persist AFTER outputs so a crash never loses the run's files.
-    db = StateDB(cfg.state_db)
-    db.record_run(run_at, cfg.location.name, data["forecasts"], features["panel"])
+    db.record_run(run_at, cfg.location.name, data["forecasts"], features["panel"],
+                  model_inits=model_inits)
+    _push_new_alerts(cfg, db, alerts, run_at)
+    removed = DiskCache(cfg.cache_dir, cfg.cache_ttl_minutes).prune_history(
+        keep_days=cfg.schedule.cache_history_days
+    )
+    if removed:
+        console.log().info("pruned %d old cache history files", removed)
+    return Snapshot(run_at, run_dir, digest, features)
 
-    push_alerts(cfg.ntfy, alerts)
+
+def write_briefing_for(
+    cfg: Config, snap: Snapshot, *, trigger: list[str] | None = None
+) -> tuple[str, bool, list[Alert], str]:
+    """LLM briefing + LLM-phrased alerts for a snapshot; rewrites its outputs."""
+    from skywatch import llm
+
+    digest = dict(snap.digest)
+    if trigger:
+        digest["briefing_trigger"] = trigger   # why a fresh briefing was warranted
+        output.write_digest(snap.run_dir, digest)  # digest.json = exactly what the LLM saw
+    briefing_md, llm_ok = llm.write_briefing(cfg, digest)
+    alerts, alert_mode = llm.write_alerts(
+        cfg, digest, snap.features["events"], snap.features["enso"], snap.features["vortex"]
+    )
+    output.write_briefing(snap.run_dir, briefing_md)
+    output.write_alerts(snap.run_dir, alerts, mode=alert_mode, run_at=snap.run_at)
+    _render_dashboard(cfg, snap.run_dir, snap.digest, briefing_md, alerts,
+                      grid=snap.features["grid_summary"], skill=snap.features["skill_summary"],
+                      briefing_at=snap.run_at)
+    db = StateDB(cfg.state_db)
+    if llm_ok:
+        db.set_meta("last_briefing_run_dir", str(snap.run_dir))
+        db.set_meta("last_briefing_at", snap.run_at.astimezone(UTC).isoformat())
+    _push_new_alerts(cfg, db, alerts, snap.run_at)
+    return briefing_md, llm_ok, alerts, alert_mode
+
+
+def _carried_briefing(cfg: Config, db: StateDB) -> tuple[str, datetime | None]:
+    """The most recent LLM briefing and when it was written, for snapshots.
+
+    Falls back to scanning past run directories (newest first) for one whose
+    alerts were LLM-generated — so an upgrade from the run-only era, or a lost
+    state.db, still carries the last real briefing forward.
+    """
+    run_dir = db.get_meta("last_briefing_run_dir")
+    at = db.get_meta("last_briefing_at")
+    if run_dir and at and (Path(run_dir) / "briefing.md").exists():
+        return (Path(run_dir) / "briefing.md").read_text(), datetime.fromisoformat(at)
+    for d in sorted(cfg.output_dir.glob("????-??-??_????"), reverse=True):
+        alerts_p, brief_p = d / "alerts.json", d / "briefing.md"
+        if not (alerts_p.exists() and brief_p.exists()):
+            continue
+        try:
+            meta = json.loads(alerts_p.read_text())
+        except json.JSONDecodeError:
+            continue
+        if meta.get("generator") == "skywatch (llm)":
+            when = datetime.fromisoformat(meta["generated_at"])
+            db.set_meta("last_briefing_run_dir", str(d))
+            db.set_meta("last_briefing_at", when.astimezone(UTC).isoformat())
+            return brief_p.read_text(), when
+    return ("# No briefing yet\n\nInstruments are live; the first LLM briefing "
+            "arrives at the next anchor time or material change.\n"), None
+
+
+def last_briefing_digest(cfg: Config, db: StateDB) -> dict[str, Any] | None:
+    run_dir = db.get_meta("last_briefing_run_dir")
+    if run_dir and (Path(run_dir) / "digest.json").exists():
+        data: dict[str, Any] = json.loads((Path(run_dir) / "digest.json").read_text())
+        return data
+    return None
+
+
+def _push_new_alerts(cfg: Config, db: StateDB, alerts: list[Alert], at: datetime) -> None:
+    """Push only alerts that are new or escalated since we last pushed them."""
+    if not cfg.ntfy.enabled or not cfg.ntfy.topic:
+        return
+    min_rank = severity_rank(Alert(
+        severity=Severity(cfg.ntfy.min_severity), category="x", title="x", detail="x",
+        confidence=0, valid_from=at.date(), valid_to=at.date(), sources=[],
+    ))
+    to_push, updates = select_pushes(alerts, db.pushed_alerts(), min_rank=min_rank)
+    if to_push:
+        push_alerts(cfg.ntfy, to_push)
+        db.record_pushes(updates, at)
+    db.forget_pushes_before(at.date() - timedelta(days=2))
+
+
+def snapshot_only(cfg: Config, *, refresh: bool = False, json_out: bool = False) -> None:
+    snap = take_snapshot(cfg, refresh=refresh)
+    if json_out:
+        console.emit_json({"run_dir": str(snap.run_dir), "briefing": "carried forward"})
+    else:
+        console.err().print(f"[green]Snapshot complete:[/green] {snap.run_dir}")
+
+
+def run_cycle(
+    cfg: Config, *, use_llm: bool = True, refresh: bool = False, json_out: bool = False
+) -> None:
+    """Snapshot now, then (unless --no-llm) write a fresh briefing for it."""
+    snap = take_snapshot(cfg, refresh=refresh)
+    llm_ok, alert_mode, alerts = False, "mechanical", _load_alerts(snap.run_dir)
+    if use_llm:
+        _, llm_ok, alerts, alert_mode = write_briefing_for(cfg, snap, trigger=["manual run"])
 
     if json_out:
         console.emit_json(
             {
-                "run_dir": str(run_dir),
+                "run_dir": str(snap.run_dir),
                 "llm_ok": llm_ok,
                 "alert_mode": alert_mode,
                 "n_alerts": len(alerts),
@@ -97,61 +208,27 @@ def run_cycle(
             }
         )
     else:
-        console.err().print(f"[green]Run complete:[/green] {run_dir}")
+        console.err().print(f"[green]Run complete:[/green] {snap.run_dir}")
         console.err().print(
-            f"  briefing: {'LLM' if llm_ok else 'unavailable-note'}, "
+            f"  briefing: {'LLM' if llm_ok else 'unavailable-note' if use_llm else 'skipped'}, "
             f"alerts: {len(alerts)} ({alert_mode})"
         )
 
 
 def brief_only(cfg: Config, *, run_dir: Path | None = None, json_out: bool = False) -> None:
     """Re-run the LLM over an existing digest (e.g. after the model comes back)."""
-    from skywatch import llm
-
     target = run_dir or output.latest_run_dir(cfg.output_dir)
     if target is None or not (target / "digest.json").exists():
         raise FileNotFoundError("No digest.json found; run `skywatch run` first.")
     digest = json.loads((target / "digest.json").read_text())
+    run_at = datetime.fromisoformat(digest["meta"]["run_at"])
 
-    briefing_md, llm_ok = llm.write_briefing(cfg, digest)
-    output.write_briefing(target, briefing_md)
-
-    # Rebuild the dashboard so it embeds the new briefing. The grid comes
-    # from cache (or a fresh fetch if the TTL lapsed); failure just skips maps.
-    alerts = _load_alerts(target)
-    grid_sum = None
-    if cfg.gridmap.enabled:
-        try:
-            from skywatch.sources import build_sources
-            from skywatch.sources.openmeteo_grid import GRID_VARIABLES
-
-            grid_sum = grid_summary(
-                build_sources(cfg)["openmeteo_grid"].fetch(), variables=GRID_VARIABLES
-            )
-        except Exception as exc:
-            console.log().warning("Grid unavailable for re-brief; maps skipped: %s", exc)
-    skill_sum = None
-    if cfg.skill.enabled:
-        try:
-            from datetime import timedelta
-
-            from skywatch.sources import build_sources
-
-            today = datetime.now(UTC).date()
-            observed = build_sources(cfg)["openmeteo_observed"].fetch()
-            rows = StateDB(cfg.state_db).forecast_history(
-                since=today - timedelta(days=cfg.skill.window_days),
-                until=today - timedelta(days=1),
-            )
-            skill_sum = model_skill(
-                rows, observed,
-                provisional_below_n=cfg.skill.provisional_below_n,
-                provisional_below_days=cfg.skill.provisional_below_days,
-            )
-        except Exception as exc:
-            console.log().warning("Verification unavailable for re-brief: %s", exc)
-    _render_dashboard(cfg, target, digest, briefing_md, alerts, grid=grid_sum,
-                      skill=skill_sum)
+    # Rebuild the feature objects the briefing step needs from cached data
+    # (a cache hit if within TTL, otherwise a fresh fetch).
+    data = _fetch_all(cfg, refresh=False)
+    features = _compute_features(cfg, data, run_at)
+    snap = Snapshot(run_at, target, digest, features)
+    _, llm_ok, _, _ = write_briefing_for(cfg, snap, trigger=["manual re-brief"])
 
     if json_out:
         console.emit_json({"run_dir": str(target), "llm_ok": llm_ok})
@@ -299,20 +376,24 @@ def _compute_features(cfg: Config, data: dict[str, Any], run_at: datetime) -> di
 
     db = StateDB(cfg.state_db)
     target_dates = panel.dates[: cfg.briefing_days]
-    trends = forecast_trends(db.history(list(target_dates)), max_runs=6)
+    trends = forecast_trends(
+        db.history(list(target_dates), max_runs=12, window_hours=72, now=run_at),
+        max_runs=12,
+    )
 
     skill_sum: SkillSummary | None = None
     if data.get("observed"):
-        from datetime import timedelta
-
         rows = db.forecast_history(
             since=today - timedelta(days=cfg.skill.window_days),
             until=today - timedelta(days=1),
         )
+        since = today - timedelta(days=cfg.skill.window_days)
         skill_sum = model_skill(
             rows, data["observed"],
             provisional_below_n=cfg.skill.provisional_below_n,
             provisional_below_days=cfg.skill.provisional_below_days,
+            normals=_normals_for(data["climatology"], since, today),
+            cycles=db.forecast_cycles(since=since, until=today - timedelta(days=1)),
         )
 
     grid_sum: GridMapSummary | None = None
@@ -334,6 +415,24 @@ def _compute_features(cfg: Config, data: dict[str, Any], run_at: datetime) -> di
     }
 
 
+def _normals_for(climatology: Any, since: date, until: date) -> dict[date, float]:
+    """Climatological daily-max normal per date in [since, until], for the
+    skill baseline. Tolerates the climatology being keyed by date or (month, day)."""
+    out: dict[date, float] = {}
+    if not climatology:
+        return out
+    sample_key = next(iter(climatology))
+    d = since
+    while d <= until:
+        key: Any = d if isinstance(sample_key, date) else (d.month, d.day)
+        day = climatology.get(key)
+        mean = getattr(day, "tmax_mean", None)
+        if mean is not None:
+            out[d] = float(mean)
+        d += timedelta(days=1)
+    return out
+
+
 def _skill_digest(skill: SkillSummary | None) -> dict[str, Any] | None:
     """Compact verified-accuracy section for the LLM: overall scores only."""
     if skill is None or not skill.by_model:
@@ -353,6 +452,7 @@ def _skill_digest(skill: SkillSummary | None) -> dict[str, Any] | None:
             }
             for model, ms in skill.by_model.items()
         },
+        "beats_climatology_until_hours": skill.beats_climatology_until_h,
     }
 
 
@@ -384,10 +484,12 @@ def _render_dashboard(
     alerts: list[Alert],
     grid: GridMapSummary | None = None,
     skill: SkillSummary | None = None,
+    briefing_at: datetime | None = None,
 ) -> None:
     from skywatch.dashboard import render_dashboard
 
-    render_dashboard(cfg, run_dir, digest, briefing_md, alerts, grid=grid, skill=skill)
+    render_dashboard(cfg, run_dir, digest, briefing_md, alerts, grid=grid, skill=skill,
+                     briefing_at=briefing_at)
 
 
 def _load_alerts(run_dir: Path) -> list[Alert]:

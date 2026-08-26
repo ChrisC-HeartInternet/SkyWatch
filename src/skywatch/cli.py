@@ -51,6 +51,31 @@ def run(
 
 
 @app.command()
+def snapshot(
+    config: ConfigOpt = None,
+    json_out: JsonOpt = False,
+    verbose: VerboseOpt = False,
+    refresh: RefreshOpt = False,
+) -> None:
+    """Fetch + features + dashboard + state, NO LLM. Carries the last briefing forward."""
+    console.setup(json_out, verbose)
+    cfg = load_config(config)
+    from skywatch.pipeline import snapshot_only
+
+    snapshot_only(cfg, refresh=refresh, json_out=json_out)
+
+
+@app.command()
+def watch(config: ConfigOpt = None, verbose: VerboseOpt = False) -> None:
+    """Daemon: snapshot when a model publishes a new cycle; brief at anchors or on change."""
+    console.setup(False, verbose)
+    cfg = load_config(config)
+    from skywatch.watch import main as watch_main
+
+    watch_main(cfg)
+
+
+@app.command()
 def fetch(
     config: ConfigOpt = None,
     json_out: JsonOpt = False,

@@ -128,6 +128,20 @@ class VortexConfig(BaseModel):
     weak_ms: float = Field(default=15.0, description="u below this = notably weak vortex")
 
 
+class ScheduleConfig(BaseModel):
+    """The `skywatch watch` daemon: snapshots on new model cycles, briefings at
+    anchors or on material change."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    poll_minutes: int = Field(default=30, ge=5, description="How often to check model metadata")
+    anchors: list[str] = Field(default=["06:30", "16:30"],
+                               description="Local times that always get an LLM briefing")
+    materiality_drift_c: float = Field(default=2.0, gt=0)
+    min_brief_gap_minutes: int = Field(default=90, ge=0)
+    cache_history_days: int = Field(default=30, ge=1, description="Prune raw history older")
+
+
 class SkillConfig(BaseModel):
     """Forecast verification: score each model against ERA5 observations."""
 
@@ -225,6 +239,7 @@ class Config(BaseModel):
     climatology: ClimatologyConfig = Field(default_factory=ClimatologyConfig)
     gridmap: GridMapConfig = Field(default_factory=GridMapConfig)
     skill: SkillConfig = Field(default_factory=SkillConfig)
+    schedule: ScheduleConfig = Field(default_factory=ScheduleConfig)
     ntfy: NtfyConfig = Field(default_factory=NtfyConfig)
     serve: ServeConfig = Field(default_factory=ServeConfig)
     stormwatch: StormwatchConfig = Field(default_factory=StormwatchConfig)

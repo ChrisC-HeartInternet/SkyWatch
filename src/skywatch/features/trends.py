@@ -38,11 +38,19 @@ def forecast_trends(
     history: dict[tuple[date, str], list[HistoryPoint]],
     *,
     max_runs: int = 6,
+    since: datetime | None = None,
 ) -> list[TrendDelta]:
-    """Trend per (target_date, variable) over the most recent max_runs runs."""
+    """Trend per (target_date, variable) over the most recent runs.
+
+    `since` bounds the window in time (several snapshots a day would otherwise
+    squash "the last six runs" into a day and a half); max_runs caps the count.
+    """
     out: list[TrendDelta] = []
     for (target, variable), points in sorted(history.items()):
-        pts = sorted(points, key=lambda p: p.run_at)[-max_runs:]
+        pts = sorted(points, key=lambda p: p.run_at)
+        if since is not None:
+            pts = [p for p in pts if p.run_at >= since]
+        pts = pts[-max_runs:]
         t = TrendDelta(
             target_date=target,
             variable=variable,

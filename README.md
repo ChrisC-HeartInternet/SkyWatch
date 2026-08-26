@@ -40,13 +40,13 @@ cache/                raw API responses, TTL'd latest + append-only history
 ```bash
 git clone https://github.com/ChrisC-HeartInternet/SkyWatch.git skywatch && cd skywatch
 cp .env.example .env        # set SKYWATCH_LOCATION and your LLM endpoint
-docker compose up -d        # scheduler (06:30 + 16:30), dashboard server, storm watch
-docker compose run --rm --entrypoint skywatch scheduler run   # run a cycle now
+docker compose up -d        # watcher, dashboard server, storm watch
+docker compose run --rm watch run          # don't wait: snapshot + briefing now
 open http://127.0.0.1:8092/
 ```
 
-Three containers from one image: `scheduler` runs the twice-daily cycle,
-`serve` hosts the dashboard, `stormwatch` watches lightning. Data persists in
+Three containers from one image: `watch` keeps the forecast current (see
+*Refresh cadence*), `serve` hosts the dashboard, `stormwatch` watches lightning. Data persists in
 the `skywatch-data` volume.
 
 Reaching the dashboard over Tailscale from Docker: on a **Linux host** set
@@ -97,7 +97,9 @@ needs no key; set `SKYWATCH_LLM_API_KEY` if yours does.
 
 | Command | Does |
 |---|---|
-| `skywatch run` | full cycle: fetch → features → digest → LLM → outputs → state |
+| `skywatch watch` | **the daemon**: snapshot on every new model cycle, brief at anchors / on material change |
+| `skywatch snapshot` | fetch → features → dashboard → state, no LLM (last briefing carried forward) |
+| `skywatch run` | one snapshot + one LLM briefing, right now |
 | `skywatch fetch` | data only; populates the cache, computes nothing |
 | `skywatch brief` | LLM only, over the latest (or `--run DIR`) existing digest |
 | `skywatch status` | latest alerts, ENSO and vortex state in the terminal |
@@ -133,19 +135,38 @@ cp launchd/com.skywatch.serve.plist.example ~/Library/LaunchAgents/com.skywatch.
 launchctl load ~/Library/LaunchAgents/com.skywatch.serve.plist
 ```
 
-## Scheduling
+## Refresh cadence — snapshots vs briefings
 
-No internal scheduler — the app is a one-shot run. Docker users get
-`supercronic` in the `scheduler` container ([`docker/crontab`](docker/crontab));
-on macOS use launchd:
+The global models (ECMWF, GFS, ICON, UKMO) each publish a new cycle **every
+6 hours**, 4–7 h after the nominal time. Fetching twice a day would see half
+of them; fetching hourly would mostly re-download the same forecast. So
+Skywatch separates two things with different natural cadences:
+
+- **Snapshots** — fetch, features, dashboard instruments, `state.db`. The
+  `watch` daemon polls Open-Meteo's per-model run metadata every 30 minutes
+  (a handful of 1 KB requests) and snapshots **only when a model has published
+  a new cycle** — every cycle captured within ~30 minutes, nothing fetched
+  twice. No LLM involved.
+- **Briefings** — the LLM prose. Written at the **anchor times** (`06:30`,
+  `16:30` local by default) and additionally when a snapshot changes something
+  *material*: the set of threshold events, a briefing-window day drifting
+  ≥ 2 °C, or an uncertainty flag flipping. Otherwise the previous briefing is
+  carried forward and the dashboard stamps both times ("instruments 12:45 ·
+  briefing 06:30").
+- **Alert pushes** fire once per alert — on first appearance or escalation —
+  never once per run.
+
+Complete cycle coverage is what makes the verification honest: every forecast
+each model actually issued gets scored, lead time is measured in hours, and
+00Z/06Z/12Z/18Z cycles can be compared. Tune `schedule.*` in `config.yaml`.
+
+On macOS without Docker, run the daemon under launchd:
 
 ```bash
-cp launchd/com.skywatch.run.plist.example ~/Library/LaunchAgents/com.skywatch.run.plist
-# edit paths inside, then:
-launchctl load ~/Library/LaunchAgents/com.skywatch.run.plist
+cp launchd/com.skywatch.watch.plist.example ~/Library/LaunchAgents/com.skywatch.watch.plist
+# edit the /Users/YOURNAME paths, then:
+launchctl load ~/Library/LaunchAgents/com.skywatch.watch.plist
 ```
-
-Default schedule is 06:30 and 16:30 daily; logs land in `logs/`.
 
 ## Data sources (all free, all verified with live requests)
 
@@ -199,6 +220,12 @@ each stored forecast is scored against what actually happened:
 
 - **MAE and bias** per model, per variable, per lead-time bucket (0–2, 3–4,
   5–7, 8+ days ahead). Bias sign tells you a model runs warm/wet/windy.
+- **Error-growth curve** — max-temperature error in 12-hour lead steps, one
+  line per model, with the **climatology baseline** ("assume the 1991–2020
+  normal") drawn alongside. Where a model's line crosses climatology's is the
+  lead beyond which it stops adding information; the panel reports it per model.
+- **Skill by cycle hour** — once snapshots record which cycle fed them, 00Z vs
+  06Z vs 12Z vs 18Z runs are scored separately.
 - **Rank and skill vs the panel median** — the blend is the baseline every
   individual model has to beat ("+41 %" = 41 % lower error than the median).
 - **Provisional flags**: ratings are marked provisional until they rest on

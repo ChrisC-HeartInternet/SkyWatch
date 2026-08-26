@@ -74,3 +74,20 @@ class DiskCache:
         hist_dir.mkdir(exist_ok=True)
         stamp = now.strftime("%Y%m%dT%H%M%SZ")
         (hist_dir / f"{_safe_key(key)}_{stamp}.json").write_text(text)
+
+    def prune_history(self, *, keep_days: int) -> int:
+        """Delete history files older than keep_days. Returns the count removed.
+
+        With several snapshots a day the grid source alone writes ~1 MB each;
+        raw history is for debugging, not the archive of record (state.db is).
+        """
+        cutoff = datetime.now(UTC).timestamp() - keep_days * 86400
+        removed = 0
+        for f in self.root.glob("*/history/*.json"):
+            try:
+                if f.stat().st_mtime < cutoff:
+                    f.unlink()
+                    removed += 1
+            except OSError:
+                continue
+        return removed

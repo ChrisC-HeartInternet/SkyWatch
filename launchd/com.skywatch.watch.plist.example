@@ -1,0 +1,53 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Skywatch watcher: keeps `skywatch watch` running. It polls Open-Meteo's
+  model metadata every 30 min, takes a snapshot whenever a model publishes
+  a new cycle, and writes an LLM briefing at the anchor times (06:30/16:30
+  by default) or when the forecast changed materially.
+
+  Install (replace YOURNAME with your macOS user, or run
+  sed -i '' "s#/Users/YOURNAME#$HOME#g" on the copied file):
+    1. Edit the paths below if your repo or uv live elsewhere.
+    2. cp launchd/com.skywatch.watch.plist.example ~/Library/LaunchAgents/com.skywatch.watch.plist
+    3. launchctl load ~/Library/LaunchAgents/com.skywatch.watch.plist
+
+  KeepAlive restarts it if it dies (including after Tailscale comes back up —
+  binding fails while the interface is down, and launchd retries).
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.skywatch.watch</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>/opt/homebrew/bin/uv</string>
+    <string>run</string>
+    <string>skywatch</string>
+    <string>watch</string>
+  </array>
+
+  <key>WorkingDirectory</key>
+  <string>/Users/YOURNAME/skywatch</string>
+
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <key>ThrottleInterval</key>
+  <integer>30</integer>
+
+  <key>StandardOutPath</key>
+  <string>/Users/YOURNAME/skywatch/logs/watch.out.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/YOURNAME/skywatch/logs/watch.err.log</string>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>/opt/homebrew/bin:/usr/bin:/bin:/sbin:/usr/sbin</string>
+  </dict>
+</dict>
+</plist>

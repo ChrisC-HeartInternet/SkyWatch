@@ -19,9 +19,9 @@ x-skywatch: &skywatch
   restart: unless-stopped
 
 services:
-  scheduler:
+  watch:
     <<: *skywatch
-    entrypoint: ["supercronic", "-passthrough-logs", "/app/crontab"]
+    command: ["watch"]
 
   serve:
     <<: *skywatch

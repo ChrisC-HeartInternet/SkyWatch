@@ -48,6 +48,7 @@ def render_dashboard(
     alerts: list[Alert],
     grid: GridMapSummary | None = None,
     skill: SkillSummary | None = None,
+    briefing_at: datetime | None = None,
 ) -> Path:
     env = Environment(
         loader=FileSystemLoader(project_root() / "templates"), autoescape=False
@@ -97,6 +98,7 @@ def render_dashboard(
         ),
         briefing_html=_markdown_to_html(briefing_md),
         headline=_extract_headline(briefing_md),
+        briefing_stamp=_briefing_stamp(digest, briefing_at),
         **_map_panels(cfg, grid),
         **_skill_panel(cfg, skill),
     )
@@ -425,13 +427,16 @@ def _skill_color(cfg: Config, model: str) -> str:
 
 
 def _skill_panel(cfg: Config, skill: SkillSummary | None) -> dict[str, Any]:
-    out: dict[str, Any] = {"skill_chart": "", "skill_table": "", "skill_caption": ""}
+    out: dict[str, Any] = {"skill_chart": "", "skill_table": "", "skill_caption": "",
+                           "skill_curve": "", "skill_clim_note": ""}
     if skill is None or not skill.by_model:
         return out
     models = [m for m in [*cfg.models.deterministic, "panel_median"] if m in skill.by_model]
 
     out["skill_chart"] = _skill_chart(cfg, skill, models)
     out["skill_table"] = _skill_table(cfg, skill, models)
+    out["skill_curve"] = _skill_curve_chart(cfg, skill, models)
+    out["skill_clim_note"] = _clim_note(skill, models)
     any_prov = any(
         vs.overall.provisional
         for m in models
@@ -487,6 +492,61 @@ def _skill_chart(cfg: Config, skill: SkillSummary, models: list[str]) -> str:
         parts.append(svg.text(ml + slot * (bi + 0.5), h - mb + 16,
                               f"{bucket} days ahead", "lbl"))
     return _svg_wrap(w, h, parts, label="Max-temperature error by model and lead time")
+
+
+def _skill_curve_chart(cfg: Config, skill: SkillSummary, models: list[str]) -> str:
+    """Error-growth curve: tmax MAE vs lead hours, one line per model, plus the
+    climatology baseline. The crossing is where a model stops adding information."""
+    from skywatch.features.skill import CLIMATOLOGY_NAME
+
+    series = {m: pts for m, pts in skill.curve.items() if m in models or m == CLIMATOLOGY_NAME}
+    if sum(len(p) for p in series.values()) < 2:
+        return ""
+    w, h = 520, 220
+    ml, mr, mt, mb = 40, 96, 12, 34
+    max_h = max(p.lead_hours for pts in series.values() for p in pts) + 12
+    max_mae = max(p.mae for pts in series.values() for p in pts)
+    ticks = svg.nice_ticks(0, max(max_mae, 0.5), 4)
+    ys = svg.Scale(ticks[0], ticks[-1], h - mb, mt)
+    xs = svg.Scale(0, max_h, ml, w - mr)
+    parts = [svg.grid_and_axis(ys, ticks, ml, w - mr, "°")]
+    ends: list[tuple[float, float, str, str]] = []
+    for m, pts in series.items():
+        if len(pts) < 1:
+            continue
+        color = "var(--text-muted)" if m == CLIMATOLOGY_NAME else _skill_color(cfg, m)
+        coords = [(xs(p.lead_hours + 6), ys(p.mae)) for p in pts]
+        if len(coords) >= 2:
+            parts.append(svg.polyline(coords, color, dash="6 4" if m == CLIMATOLOGY_NAME else ""))
+        for p, (x, y) in zip(pts, coords, strict=True):
+            parts.append(svg.dot(x, y, color, r=2.5,
+                                 title=f"{_MODEL_SHORT.get(m, m)} at +{p.lead_hours}h: "
+                                       f"MAE {p.mae}°C, n={p.n}"))
+        label = "normal for the date" if m == CLIMATOLOGY_NAME else _MODEL_SHORT.get(m, m)
+        ends.append((coords[-1][0], coords[-1][1], label, color))
+    for (x, _y, label, _c), ly in zip(
+        ends, _spread_positions([e[1] for e in ends], min_gap=13.0), strict=True
+    ):
+        parts.append(svg.text(x + 8, ly + 4, label, "lbl", "start"))
+    for hrs in range(0, int(max_h) + 1, 48):
+        parts.append(svg.text(xs(hrs), h - mb + 16, f"+{hrs // 24}d", "lbl"))
+    return _svg_wrap(
+        w, h, parts, label="Max-temperature error growth with lead time, vs climatology"
+    )
+
+
+def _clim_note(skill: SkillSummary, models: list[str]) -> str:
+    bits = []
+    for m in models:
+        if m not in skill.beats_climatology_until_h:
+            continue
+        until = skill.beats_climatology_until_h[m]
+        name = _MODEL_SHORT.get(m, "Panel median")
+        span = "all leads so far" if until is None else f"to ~{until / 24:.1f} days"
+        bits.append(f"{name}: {span}")
+    if not bits:
+        return ""
+    return "Beats climatology — " + " · ".join(bits) + "."
 
 
 def _skill_table(cfg: Config, skill: SkillSummary, models: list[str]) -> str:
@@ -734,6 +794,19 @@ def _alert_view(a: Alert) -> dict[str, str]:
         "confidence_pct": f"{a.confidence:.0%}",
         "sources": html.escape(sources, quote=False),
     }
+
+
+def _briefing_stamp(digest: dict[str, Any], briefing_at: datetime | None) -> str | None:
+    """'briefing 06:30' when the briefing is older than the instruments; None when
+    they were written together (the run stamp already says it)."""
+    if briefing_at is None:
+        return "no briefing yet"
+    run_at = datetime.fromisoformat(digest["meta"]["run_at"])
+    if abs((run_at - briefing_at).total_seconds()) < 120:
+        return None
+    same_day = run_at.date() == briefing_at.date()
+    fmt = "%H:%M" if same_day else "%d %b %H:%M"
+    return f"briefing {briefing_at.strftime(fmt)} UTC"
 
 
 def _extract_headline(briefing_md: str) -> str | None:

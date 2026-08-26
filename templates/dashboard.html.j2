@@ -156,7 +156,7 @@ a:focus-visible { outline: 2px solid var(--series-1); outline-offset: 2px; borde
 
 <div class="statusbar">
   <h1>Skywatch — {{ location }}</h1>
-  <span class="when">run {{ run_at }}</span>
+  <span class="when">instruments {{ run_at }}{% if briefing_stamp %} · {{ briefing_stamp }}{% endif %}</span>
   <span class="chip">alerts:
     {%- if alert_counts %}
       {%- for sev, n in alert_counts %} <span class="sev {{ sev }}">{{ n }} {{ sev }}</span>{% endfor %}
@@ -268,6 +268,12 @@ a:focus-visible { outline: 2px solid var(--series-1); outline-offset: 2px; borde
     <div class="scroll">{{ skill_chart }}</div>
     <div class="scroll">{{ skill_table }}</div>
   </div>
+  {% if skill_curve %}
+  <div class="scroll" style="margin-top:14px">{{ skill_curve }}</div>
+  <figcaption>Error growth with lead time — daily maximum temperature, 12-hour steps.
+  The dashed line is "assume the 1991–2020 normal": where a model rises above it,
+  the forecast has stopped adding information. {{ skill_clim_note }}</figcaption>
+  {% endif %}
   <figcaption>{{ skill_caption }}</figcaption>
 </section>
 {% endif %}

@@ -61,6 +61,26 @@ class ModelSkill(BaseModel):
     variables: dict[str, VariableSkill]
 
 
+class CurvePoint(BaseModel):
+    """Error at one lead-time step, for the error-growth curve."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    lead_hours: int          # bucket start, in hours
+    n: int
+    mae: float
+
+
+class CycleScore(BaseModel):
+    """Skill of one model's cycle hour (00Z/06Z/12Z/18Z)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    init_hour: int
+    n: int
+    mae: float
+
+
 class SkillSummary(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -68,6 +88,20 @@ class SkillSummary(BaseModel):
     total_samples: int
     first_verified: date | None = None
     last_verified: date | None = None
+    # Error-growth curve per model for daily max temperature, in CURVE_STEP_HOURS
+    # buckets — the "harder further out" picture. Includes the climatology
+    # baseline under CLIMATOLOGY_NAME when normals were supplied.
+    curve: dict[str, list[CurvePoint]] = {}
+    # Same variable: per model, per cycle hour (only for runs that recorded cycles).
+    by_cycle: dict[str, list[CycleScore]] = {}
+    # Lead (hours) at which each model's tmax MAE first exceeds climatology's, or
+    # None if it never does within the data. "When to stop trusting it."
+    beats_climatology_until_h: dict[str, int | None] = {}
+
+
+CURVE_VARIABLE = "temperature_2m_max"
+CURVE_STEP_HOURS = 12
+CLIMATOLOGY_NAME = "climatology"
 
 
 def _bucket_for(lead_days: int) -> str | None:
@@ -77,12 +111,20 @@ def _bucket_for(lead_days: int) -> str | None:
     return None
 
 
+def lead_hours(run_at: datetime, target: date) -> float:
+    """Hours from issue time to the target day's midday (UTC) — a continuous lead."""
+    midday = datetime(target.year, target.month, target.day, 12, tzinfo=run_at.tzinfo)
+    return (midday - run_at).total_seconds() / 3600
+
+
 def model_skill(
     rows: list[tuple[datetime, str, str, date, float]],
     observed: dict[date, dict[str, float]],
     *,
     provisional_below_n: int,
     provisional_below_days: int = 1,
+    normals: dict[date, float] | None = None,
+    cycles: dict[tuple[datetime, str], int] | None = None,
 ) -> SkillSummary:
     """Score every verifiable forecast row against observations.
 
@@ -94,6 +136,9 @@ def model_skill(
     errors: dict[str, dict[str, dict[str, list[float]]]] = {}
     days_seen: dict[tuple[str, str], set[date]] = {}
     verified_dates: set[date] = set()
+    # curve[model][lead_bucket_hours] -> abs errors (tmax only)
+    curve_err: dict[str, dict[int, list[float]]] = {}
+    cycle_err: dict[str, dict[int, list[float]]] = {}
 
     for run_at, model, variable, target, value in rows:
         truth = observed.get(target, {}).get(variable)
@@ -101,13 +146,25 @@ def model_skill(
             continue
         lead = (target - run_at.date()).days
         bucket = _bucket_for(lead)
-        if bucket is None:
+        if bucket is None or lead < 0:
             continue
         errors.setdefault(model, {}).setdefault(variable, {}).setdefault(
             bucket, []
         ).append(value - truth)
         days_seen.setdefault((model, variable), set()).add(target)
         verified_dates.add(target)
+        if variable == CURVE_VARIABLE:
+            lh = max(0.0, lead_hours(run_at, target))
+            step = int(lh // CURVE_STEP_HOURS) * CURVE_STEP_HOURS
+            curve_err.setdefault(model, {}).setdefault(step, []).append(abs(value - truth))
+            if cycles and (hour := cycles.get((run_at, model))) is not None:
+                cycle_err.setdefault(model, {}).setdefault(hour, []).append(abs(value - truth))
+            if normals and (normal := normals.get(target)) is not None:
+                # Climatology "forecast" is the same at every lead; score it on
+                # the same (target, lead) pairs so the comparison is like for like.
+                curve_err.setdefault(CLIMATOLOGY_NAME, {}).setdefault(step, []).append(
+                    abs(normal - truth)
+                )
 
     by_model: dict[str, ModelSkill] = {}
     total = 0
@@ -141,12 +198,44 @@ def model_skill(
         by_model[model] = ModelSkill(variables=variables)
 
     _rank_and_compare(by_model)
+    curve = {
+        m: [CurvePoint(lead_hours=h, n=len(e), mae=round(statistics.fmean(e), 2))
+            for h, e in sorted(buckets.items())]
+        for m, buckets in curve_err.items()
+    }
+    by_cycle = {
+        m: [CycleScore(init_hour=h, n=len(e), mae=round(statistics.fmean(e), 2))
+            for h, e in sorted(hours.items())]
+        for m, hours in cycle_err.items()
+    }
     return SkillSummary(
         by_model=by_model,
         total_samples=total,
         first_verified=min(verified_dates) if verified_dates else None,
         last_verified=max(verified_dates) if verified_dates else None,
+        curve=curve,
+        by_cycle=by_cycle,
+        beats_climatology_until_h=_beats_until(curve),
     )
+
+
+def _beats_until(curve: dict[str, list[CurvePoint]]) -> dict[str, int | None]:
+    """First lead bucket where a model's MAE meets or exceeds climatology's.
+
+    None means the model beat climatology at every lead we have data for; a
+    model with no overlapping buckets is omitted.
+    """
+    clim = {p.lead_hours: p.mae for p in curve.get(CLIMATOLOGY_NAME, [])}
+    out: dict[str, int | None] = {}
+    for model, pts in curve.items():
+        if model == CLIMATOLOGY_NAME:
+            continue
+        overlap = [p for p in pts if p.lead_hours in clim]
+        if not overlap:
+            continue
+        crossed = next((p.lead_hours for p in overlap if p.mae >= clim[p.lead_hours]), None)
+        out[model] = crossed
+    return out
 
 
 def _rank_and_compare(by_model: dict[str, ModelSkill]) -> None:
