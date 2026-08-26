@@ -224,6 +224,23 @@ def render_map(
         return x, y
 
     parts: list[str] = []
+    # Compass: the map is north-up (latitude up, longitude right). A faint
+    # crosshair through home plus the four cardinal letters just outside the
+    # outer ring make a strike's bearing readable without thinking.
+    outer = sw.approach_radius_miles * px_per_mile
+    parts.append(
+        f'<line x1="{cx}" y1="0" x2="{cx}" y2="{size}" class="crosshair"/>'
+        f'<line x1="0" y1="{cy}" x2="{size}" y2="{cy}" class="crosshair"/>'
+    )
+    for label, x, y, anchor in (
+        ("N", cx, cy - outer - 10, "middle"),
+        ("S", cx, cy + outer + 20, "middle"),
+        ("E", cx + outer + 12, cy + 5, "start"),
+        ("W", cx - outer - 12, cy + 5, "end"),
+    ):
+        parts.append(
+            f'<text x="{x:.0f}" y="{y:.0f}" class="compass" text-anchor="{anchor}">{label}</text>'
+        )
     for r_mi in (sw.alert_radius_miles, 10.0, sw.approach_radius_miles):
         r = r_mi * px_per_mile
         parts.append(
@@ -322,6 +339,9 @@ body {{ margin:0; padding:8px 12px; background:var(--surface-1); color:var(--tex
 .meta {{ color:var(--text-muted); font-size:12px; text-align:center; }}
 svg {{ max-width:100%; height:auto; }}
 svg .tick {{ fill:var(--text-muted); font-size:11px; }}
+svg .compass {{ fill:var(--text-secondary); font-size:13px; font-weight:600;
+  letter-spacing:0.04em; }}
+svg .crosshair {{ stroke:var(--grid); stroke-width:1; stroke-dasharray:2 5; opacity:0.8; }}
 </style></head><body>
 {banner}
 <div class="status">{status}</div>

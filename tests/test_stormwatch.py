@@ -91,3 +91,16 @@ def test_lzw_roundtrip_plain_ascii() -> None:
     # codes < 256 pass through: a plain JSON string survives the decoder
     assert lzw_decode('{"lat": 1}') == '{"lat": 1}'
     assert lzw_decode("") == ""
+
+
+def test_map_has_compass_points_when_active() -> None:
+    from skywatch.config import Config, Location
+    from skywatch.stormwatch import render_map
+
+    cfg = Config(location=Location(name="Test", latitude=HOME[0], longitude=HOME[1]))
+    b = _buffer()
+    b.add(T0, 54.50, -2.90)   # one strike so the full map (not the quiet strip) renders
+    html = render_map(cfg, b, T0 + 30)
+    for letter in ("N", "S", "E", "W"):
+        assert 'class="compass" text-anchor=' in html and f">{letter}</text>" in html
+    assert 'class="crosshair"' in html
