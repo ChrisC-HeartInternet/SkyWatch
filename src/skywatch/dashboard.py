@@ -499,7 +499,15 @@ def _skill_curve_chart(cfg: Config, skill: SkillSummary, models: list[str]) -> s
     climatology baseline. The crossing is where a model stops adding information."""
     from skywatch.features.skill import CLIMATOLOGY_NAME
 
-    series = {m: pts for m, pts in skill.curve.items() if m in models or m == CLIMATOLOGY_NAME}
+    # A bucket with a handful of pairs is noise, not a curve — and with a very
+    # anomalous week the climatology baseline swings wildly per bucket. Plot
+    # only buckets with enough samples; the crossing claim is gated separately.
+    series = {
+        m: [p for p in pts if p.n >= _CURVE_MIN_N]
+        for m, pts in skill.curve.items()
+        if m in models or m == CLIMATOLOGY_NAME
+    }
+    series = {m: pts for m, pts in series.items() if pts}
     if sum(len(p) for p in series.values()) < 2:
         return ""
     w, h = 520, 220
@@ -522,7 +530,8 @@ def _skill_curve_chart(cfg: Config, skill: SkillSummary, models: list[str]) -> s
             parts.append(svg.dot(x, y, color, r=2.5,
                                  title=f"{_MODEL_SHORT.get(m, m)} at +{p.lead_hours}h: "
                                        f"MAE {p.mae}°C, n={p.n}"))
-        label = "normal for the date" if m == CLIMATOLOGY_NAME else _MODEL_SHORT.get(m, m)
+        label = ("normal for the date" if m == CLIMATOLOGY_NAME
+                 else _MODEL_SHORT.get(m, "Panel median"))
         ends.append((coords[-1][0], coords[-1][1], label, color))
     for (x, _y, label, _c), ly in zip(
         ends, _spread_positions([e[1] for e in ends], min_gap=13.0), strict=True
@@ -535,7 +544,21 @@ def _skill_curve_chart(cfg: Config, skill: SkillSummary, models: list[str]) -> s
     )
 
 
+_CURVE_MIN_N = 4
+
+
 def _clim_note(skill: SkillSummary, models: list[str]) -> str:
+    """The 'beats climatology to ~N days' claim — only once ratings are no longer
+    provisional. Before that the baseline is a few days of (possibly anomalous)
+    weather and the crossing point is noise."""
+    tmax = "temperature_2m_max"
+    provisional = any(
+        skill.by_model[m].variables[tmax].overall.provisional
+        for m in models if tmax in skill.by_model[m].variables
+    )
+    if provisional:
+        return ("The climatology comparison is provisional until two weeks of days "
+                "have verified; no crossing point is claimed yet.")
     bits = []
     for m in models:
         if m not in skill.beats_climatology_until_h:

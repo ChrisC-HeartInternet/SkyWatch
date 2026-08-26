@@ -65,6 +65,8 @@ def tick(cfg: Config, db: StateDB, now: datetime) -> dict[str, object]:
     summary: dict[str, object] = {"fresh_cycles": fresh, "anchors_due": due,
                                   "snapshot": False, "briefing": None}
     if not (fresh or due or first_ever):
+        log.info("watch: no new model cycles, no anchor due — next check in %d min",
+                 cfg.schedule.poll_minutes)
         return summary
 
     inits = {m: r.init_time for m, r in current.items()}
