@@ -1,0 +1,41 @@
+# docker compose up -d
+# Copy .env.example to .env first; every personal value lives there.
+x-skywatch: &skywatch
+  build: .
+  image: skywatch:local
+  env_file: .env
+  environment:
+    TZ: ${TZ:-Europe/London}
+    # Container-side fixed values. These win over .env, which may hold the
+    # native-run equivalents (a host data path, host: tailscale, ...).
+    SKYWATCH_DATA_DIR: /data
+    SKYWATCH_SERVE_HOST: 0.0.0.0
+    SKYWATCH_SERVE_PORT: "8092"
+  volumes:
+    # A named volume by default; set SKYWATCH_DATA_HOST_DIR in .env to a host
+    # path instead (e.g. to keep data visible next to the repo or to migrate
+    # from a native install).
+    - ${SKYWATCH_DATA_HOST_DIR:-skywatch-data}:/data
+  restart: unless-stopped
+
+services:
+  scheduler:
+    <<: *skywatch
+    entrypoint: ["supercronic", "-passthrough-logs", "/app/crontab"]
+
+  serve:
+    <<: *skywatch
+    command: ["serve"]
+    ports:
+      # Defaults to loopback so nothing is exposed by accident.
+      # Tailnet-only access: on a Linux host set SERVE_BIND_IP to your Tailscale
+      # IP; Docker Desktop (Mac/Windows) cannot bind published ports to the
+      # Tailscale interface — keep loopback and run `tailscale serve --bg 8092`.
+      - "${SERVE_BIND_IP:-127.0.0.1}:${SERVE_PORT:-8092}:8092"
+
+  stormwatch:
+    <<: *skywatch
+    command: ["stormwatch"]
+
+volumes:
+  skywatch-data:

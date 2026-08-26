@@ -1,0 +1,28 @@
+# Personal settings live in .env (copy .env.example). config.yaml is generic and tracked.
+.env
+geocode.json
+
+# Runtime data
+cache/
+output/
+state.db
+state.db-journal
+*.log
+logs/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# macOS
+.DS_Store

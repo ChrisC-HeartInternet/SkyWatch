@@ -1,0 +1,4 @@
+# Skywatch schedule (interpreted in $TZ from .env). Two runs a day is plenty:
+# the models themselves only update every 6-12 hours.
+30 6  * * *  skywatch run --json >> /data/runs.log 2>&1
+30 16 * * *  skywatch run --json >> /data/runs.log 2>&1

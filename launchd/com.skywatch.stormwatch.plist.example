@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Skywatch storm watch: keeps the real-time lightning watcher running.
+  Writes output/stormwatch.html (live strike map, served at /stormwatch.html)
+  and output/stormwatch.json, and pushes ntfy alerts for nearby lightning.
+
+  Install (replace YOURNAME with your macOS user, or run
+  sed -i '' "s#/Users/YOURNAME#$HOME#g" on the copied file):
+    cp launchd/com.skywatch.stormwatch.plist.example ~/Library/LaunchAgents/com.skywatch.stormwatch.plist
+    launchctl load ~/Library/LaunchAgents/com.skywatch.stormwatch.plist
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.skywatch.stormwatch</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>/opt/homebrew/bin/uv</string>
+    <string>run</string>
+    <string>skywatch</string>
+    <string>stormwatch</string>
+  </array>
+
+  <key>WorkingDirectory</key>
+  <string>/Users/YOURNAME/skywatch</string>
+
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <key>ThrottleInterval</key>
+  <integer>30</integer>
+
+  <key>StandardOutPath</key>
+  <string>/Users/YOURNAME/skywatch/logs/stormwatch.out.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/YOURNAME/skywatch/logs/stormwatch.err.log</string>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>/opt/homebrew/bin:/usr/bin:/bin:/sbin:/usr/sbin</string>
+  </dict>
+</dict>
+</plist>

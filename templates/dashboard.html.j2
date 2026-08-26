@@ -1,0 +1,318 @@
+<!doctype html>
+<html lang="en-GB">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="icon" href="data:,">
+<title>Skywatch — {{ location }} {{ run_date }}</title>
+<style>
+:root {
+  color-scheme: light;
+  --surface-1: #fcfcfb;
+  --surface-2: #f3f2ef;
+  --text-primary: #0b0b0b;
+  --text-secondary: #52514e;
+  --text-muted: #7d7c77;
+  --grid: #e4e3df;
+  --series-1: #2a78d6;  /* ECMWF */
+  --series-2: #eb6834;  /* GFS */
+  --series-3: #1baf7a;  /* ICON */
+  --series-4: #eda100;  /* UKMO */
+  --neutral-band: #8b8a85;
+  --diverge-warm: #d03b3b;
+  --diverge-cool: #2a78d6;
+  --status-warning: #fab219;
+  --status-serious: #ec835a;
+  --status-critical: #d03b3b;
+  --status-good: #0ca30c;
+  --ramp-temp: #eb6834;      /* orange: max temperature maps */
+  --ramp-precip: #2a78d6;    /* blue: precipitation */
+  --ramp-gust: #1baf7a;      /* aqua: gusts */
+  --ramp-disagree: #4a3aa7;  /* violet: model disagreement */
+  --coast: #7d7c77;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    color-scheme: dark;
+    --surface-1: #1a1a19;
+    --surface-2: #242423;
+    --text-primary: #ffffff;
+    --text-secondary: #c3c2b7;
+    --text-muted: #8f8e86;
+    --grid: #383835;
+    --series-1: #3987e5;
+    --series-2: #d95926;
+    --series-3: #199e70;
+    --series-4: #c98500;
+    --neutral-band: #9a998f;
+    --diverge-warm: #e66767;
+    --diverge-cool: #3987e5;
+    --ramp-temp: #d95926;
+    --ramp-precip: #3987e5;
+    --ramp-gust: #199e70;
+    --ramp-disagree: #9085e9;
+    --coast: #8f8e86;
+  }
+}
+* { box-sizing: border-box; }
+html { scroll-behavior: smooth; }
+@media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } }
+body {
+  margin: 0; padding: 24px;
+  background: var(--surface-1); color: var(--text-primary);
+  font: 15px/1.55 -apple-system, "SF Pro Text", "Helvetica Neue", Arial, sans-serif;
+  overflow-x: hidden;
+}
+@media (max-width: 600px) { body { padding: 16px; } }
+.scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+.wrap { max-width: 1060px; margin: 0 auto; }
+h1 { font-size: 22px; margin: 0; letter-spacing: -0.01em; }
+h2 { font-size: 15px; margin: 0 0 10px; color: var(--text-secondary);
+     text-transform: uppercase; letter-spacing: 0.06em; font-weight: 600; }
+.statusbar { display: flex; flex-wrap: wrap; gap: 10px 28px; align-items: baseline;
+             padding: 14px 0 18px; border-bottom: 1px solid var(--grid); margin-bottom: 22px; }
+.statusbar .when { color: var(--text-muted); font-size: 13px; }
+.chip { font-size: 13px; color: var(--text-secondary); }
+.chip b { color: var(--text-primary); font-weight: 600; }
+.sev { display: inline-block; padding: 1px 9px; border-radius: 10px; font-size: 12px;
+       font-weight: 600; color: #0b0b0b; }
+.sev.low      { background: var(--surface-2); color: var(--text-secondary); }
+.sev.moderate { background: var(--status-warning); }
+.sev.high     { background: var(--status-serious); }
+.sev.severe   { background: var(--status-critical); color: #fff; }
+section { margin-bottom: 30px; scroll-margin-top: 12px; }
+.lede { font-size: 18px; line-height: 1.55; max-width: 74ch; margin: 0 0 14px;
+        color: var(--text-primary); }
+.lede-more { font-size: 13px; color: var(--text-secondary); white-space: nowrap;
+             text-decoration: none; border-bottom: 1px solid var(--grid); }
+.lede-more:hover { color: var(--text-primary); }
+.jump { display: flex; flex-wrap: wrap; gap: 4px 18px; margin-bottom: 26px;
+        font-size: 12.5px; text-transform: uppercase; letter-spacing: 0.05em; }
+.jump a { color: var(--text-muted); text-decoration: none; font-weight: 600; }
+.jump a:hover { color: var(--text-primary); }
+.panel { background: var(--surface-2); border-radius: 10px; padding: 16px 18px; }
+.cols { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }
+.cols > *, .cols figure { min-width: 0; }
+@media (max-width: 800px) { .cols { grid-template-columns: 1fr; } }
+figure { margin: 0; }
+.stormwatch { width: 100%; max-width: 620px; height: 52px; border: none;
+              border-radius: 10px; background: var(--surface-2); display: block;
+              transition: height 0.3s ease-out; }
+@media (prefers-reduced-motion: reduce) { .stormwatch { transition: none; } }
+figcaption { font-size: 12.5px; color: var(--text-muted); margin-top: 6px; }
+svg { display: block; }
+svg .grid { stroke: var(--grid); stroke-width: 1; }
+svg .tick { fill: var(--text-muted); font-size: 11px; }
+svg .lbl  { fill: var(--text-secondary); font-size: 11px; }
+svg .lbl-strong { fill: var(--text-primary); font-size: 11.5px; font-weight: 600; }
+svg .zero { stroke: var(--text-muted); stroke-width: 1; stroke-dasharray: 3 3; }
+.maps { display: flex; flex-wrap: wrap; gap: 20px; align-items: flex-start; }
+.maps svg { max-width: 100%; height: auto; }  /* maps scale gracefully, unlike the charts */
+@media (max-width: 700px) {
+  /* On phones the tile rows become swipe strips instead of a very tall stack. */
+  .maps { flex-wrap: nowrap; overflow-x: auto; -webkit-overflow-scrolling: touch;
+          padding-bottom: 6px; }
+  .maps svg { max-width: none; flex: 0 0 auto; }
+}
+.maps.week { margin-top: 14px; gap: 10px; }
+.map-facts { padding-left: 22px; margin: 10px 0 0; font-size: 13.5px;
+             color: var(--text-secondary); }
+.map-facts li { margin: 2px 0; }
+.legend { display: flex; flex-wrap: wrap; gap: 6px 18px; font-size: 12.5px;
+          color: var(--text-secondary); margin: 8px 0 2px; }
+.legend .key { display: inline-flex; align-items: center; gap: 6px; }
+.legend .swatch { width: 14px; height: 3px; border-radius: 2px; display: inline-block; }
+.legend .swatch.band { height: 10px; opacity: 0.25; border-radius: 2px; }
+table { border-collapse: collapse; width: 100%; font-size: 13px; margin-top: 10px; }
+th, td { text-align: right; padding: 4px 10px; border-bottom: 1px solid var(--grid); }
+th:first-child, td:first-child { text-align: left; }
+th { color: var(--text-muted); font-weight: 600; font-size: 12px; }
+.briefing { max-width: 74ch; }
+.briefing h2 { font-size: 19px; margin: 0 0 12px; letter-spacing: -0.01em;
+               text-transform: none; color: var(--text-primary); font-weight: 700; }
+.briefing h3 { font-size: 13px; margin: 18px 0 6px; color: var(--text-secondary);
+               text-transform: uppercase; letter-spacing: 0.06em; font-weight: 600; }
+.briefing p, .briefing li { color: var(--text-primary); font-size: 14.5px; }
+.briefing ul { padding-left: 22px; }
+.alerts-list { display: grid; gap: 10px; }
+.alert-card { display: grid; grid-template-columns: auto 1fr; gap: 4px 14px;
+              padding: 12px 14px; background: var(--surface-2); border-radius: 10px; }
+.alert-card .sev { align-self: baseline; justify-self: start; white-space: nowrap; }
+.alert-card .title { font-weight: 600; }
+.alert-card .meta, .alert-card .detail { grid-column: 2; font-size: 13px;
+              color: var(--text-secondary); }
+.note { color: var(--text-muted); font-size: 13.5px; font-style: italic; }
+footer { color: var(--text-muted); font-size: 12px; border-top: 1px solid var(--grid);
+         padding-top: 14px; margin-top: 34px; }
+footer nav { margin-bottom: 8px; }
+footer a { color: var(--text-secondary); text-decoration: none;
+           border-bottom: 1px solid var(--grid); padding-bottom: 1px; }
+footer a:hover { color: var(--text-primary); border-bottom-color: var(--text-muted); }
+a:focus-visible { outline: 2px solid var(--series-1); outline-offset: 2px; border-radius: 2px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<div class="statusbar">
+  <h1>Skywatch — {{ location }}</h1>
+  <span class="when">run {{ run_at }}</span>
+  <span class="chip">alerts:
+    {%- if alert_counts %}
+      {%- for sev, n in alert_counts %} <span class="sev {{ sev }}">{{ n }} {{ sev }}</span>{% endfor %}
+    {%- else %} <b>none</b>{% endif %}</span>
+  <span class="chip">ENSO <b>{{ enso_chip }}</b></span>
+  <span class="chip">vortex u60N <b>{{ vortex_chip }}</b></span>
+</div>
+
+{% if headline %}
+<p class="lede">{{ headline }} <a class="lede-more" href="#briefing">Full briefing ↓</a></p>
+{% endif %}
+
+<nav class="jump" aria-label="Sections">
+  {% if alerts %}<a href="#alerts">Alerts</a>{% endif %}
+  <a href="#lightning">Lightning</a>
+  <a href="#temperature">Next 7 days</a>
+  {% if map_disagreement or map_tomorrow %}<a href="#maps">Maps</a>{% endif %}
+  {% if skill_table %}<a href="#accuracy">Accuracy</a>{% endif %}
+  <a href="#drivers">Drivers</a>
+  <a href="#briefing">Briefing</a>
+</nav>
+
+{% if alerts %}
+<section id="alerts">
+  <h2>Alerts</h2>
+  <div class="alerts-list">
+  {% for a in alerts %}
+    <div class="alert-card">
+      <span class="sev {{ a.severity }}">{{ a.severity }}</span>
+      <span class="title">{{ a.title }}</span>
+      <span class="detail">{{ a.detail }}</span>
+      <span class="meta">{{ a.when }} · confidence {{ a.confidence_pct }} · {{ a.sources }}</span>
+    </div>
+  {% endfor %}
+  </div>
+</section>
+{% endif %}
+
+<section id="lightning">
+  <h2>Lightning — live</h2>
+  <iframe class="stormwatch" src="../stormwatch.html" title="Live lightning strike map"
+          loading="lazy"
+          onload="try{this.style.height=Math.min(this.contentDocument.body.scrollHeight+8,720)+'px'}catch(e){this.style.height='640px'}"></iframe>
+  <figcaption>Updates every minute (Blitzortung network); the radar view appears
+  when strikes are detected. Phone alerts fire at 5 miles, or when strikes close
+  in. Needs the storm watch agent running.</figcaption>
+</section>
+
+<section id="temperature">
+  <h2>Temperature, next {{ n_days }} days</h2>
+  <div class="legend">
+    <span class="key"><span class="swatch band" style="background:var(--neutral-band)"></span>ensemble p10–p90 ({{ ens_label }})</span>
+    <span class="key"><span class="swatch" style="background:repeating-linear-gradient(90deg,var(--neutral-band) 0 4px,transparent 4px 7px)"></span>ensemble median</span>
+    {% for m in model_legend %}
+    <span class="key"><span class="swatch" style="background:var(--series-{{ loop.index }})"></span>{{ m }}</span>
+    {% endfor %}
+  </div>
+  <div class="scroll">{{ temp_chart }}</div>
+  <figcaption>Daily maximum temperature. The count under each day is how many
+  deterministic models cover it — a smaller panel agreeing is weaker evidence.</figcaption>
+  <div class="scroll">{{ temp_table }}</div>
+</section>
+
+<div class="cols">
+  <section>
+    <h2>Model disagreement</h2>
+    <div class="scroll">{{ disagreement_chart }}</div>
+    <figcaption>Spread between deterministic models (max − min daily maximum
+    temperature). Bars marked ⚠ exceed the divergence threshold; n = panel size.</figcaption>
+  </section>
+  <section>
+    <h2>Departure from normal</h2>
+    <div class="scroll">{{ anomaly_chart }}</div>
+    <figcaption>Panel-median daily maximum vs the 1991–2020 normal for that
+    calendar date.</figcaption>
+  </section>
+</div>
+
+<section>
+  <h2>Forecast drift across runs</h2>
+  {% if trend_charts %}
+  <div class="legend"><span class="key">How each day's forecast maximum has moved
+  over recent runs (oldest → newest).</span></div>
+  {{ trend_charts }}
+  {% else %}
+  <p class="note">No run history yet — drift charts appear once at least two runs
+  are recorded for the same target dates.</p>
+  {% endif %}
+</section>
+
+<section id="drivers">
+  <h2>Global drivers</h2>
+  <div class="cols">
+    <figure>
+      <div class="scroll">{{ enso_chart }}</div>
+      <figcaption>{{ enso_caption }}</figcaption>
+    </figure>
+    <figure>
+      <div class="scroll">{{ vortex_chart }}</div>
+      <figcaption>{{ vortex_caption }}</figcaption>
+    </figure>
+  </div>
+</section>
+
+{% if skill_table %}
+<section id="accuracy">
+  <h2>Model accuracy — verified against what happened</h2>
+  <div class="cols">
+    <div class="scroll">{{ skill_chart }}</div>
+    <div class="scroll">{{ skill_table }}</div>
+  </div>
+  <figcaption>{{ skill_caption }}</figcaption>
+</section>
+{% endif %}
+
+{% if map_disagreement or map_tomorrow %}
+<section id="maps">
+  <h2>Weather maps</h2>
+  <div class="maps">
+    {{ map_disagreement }}
+    {{ map_tomorrow }}
+  </div>
+  {% if map_week %}
+  <div class="maps week">{{ map_week }}</div>
+  {% endif %}
+  <figcaption>Cross-model panel medians on a {{ map_step }}° grid
+  ({{ map_points }} points, all {{ n_map_models }} models); the disagreement map
+  shows the max-minus-min daily maximum across models. Ring marks {{ location }}.
+  Coastline: Natural Earth (public domain).</figcaption>
+  {% if map_facts %}
+  <ul class="map-facts">
+    {% for f in map_facts %}<li>{{ f }}</li>
+    {% endfor %}
+  </ul>
+  {% endif %}
+</section>
+{% endif %}
+
+<section class="panel briefing" id="briefing">
+  {{ briefing_html }}
+</section>
+
+<footer>
+  <nav aria-label="Run files">
+    <a href="briefing.md">briefing.md</a> ·
+    <a href="alerts.json">alerts.json</a> ·
+    <a href="digest.json">digest.json</a> ·
+    <a href="../?runs">all runs</a>
+  </nav>
+  Generated by Skywatch. Weather data by <a href="https://open-meteo.com/">Open-Meteo</a>
+  (CC BY 4.0) · ENSO and climatology from NOAA · lightning from
+  <a href="https://www.blitzortung.org/">Blitzortung.org</a> contributors · coastline Natural Earth. Every number is computed in Python from
+  Open-Meteo (ECMWF, GFS, ICON, UKMO, ensembles, ERA5 climatology) and NOAA
+  (Niño 3.4, NCEP reanalysis climatology); the language model only narrates.
+</footer>
+
+</div>
+</body>
+</html>

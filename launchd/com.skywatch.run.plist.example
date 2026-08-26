@@ -1,0 +1,65 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Skywatch launchd schedule: full run at 06:30 and 16:30 daily.
+
+  Install (replace YOURNAME with your macOS user, or run
+  sed -i '' "s#/Users/YOURNAME#$HOME#g" on the copied file):
+    1. Edit the paths below (uv location, repo location, your username).
+    2. cp launchd/com.skywatch.run.plist.example ~/Library/LaunchAgents/com.skywatch.run.plist
+    3. launchctl load ~/Library/LaunchAgents/com.skywatch.run.plist
+
+  Check:    launchctl list | grep skywatch
+  Logs:     ~/skywatch/logs/launchd.{out,err}.log
+  Trigger a run now:  launchctl start com.skywatch.run
+  Uninstall: launchctl unload ~/Library/LaunchAgents/com.skywatch.run.plist
+
+  Notes:
+  - `uv run` resolves the project venv; WorkingDirectory must be the repo.
+  - -json keeps stdout machine-readable; human logging goes to stderr.
+  - launchd runs missed jobs on wake if the Mac was asleep at the scheduled
+    time (StartCalendarInterval coalesces to one catch-up run).
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.skywatch.run</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>/opt/homebrew/bin/uv</string>
+    <string>run</string>
+    <string>skywatch</string>
+    <string>run</string>
+    <string>--json</string>
+  </array>
+
+  <key>WorkingDirectory</key>
+  <string>/Users/YOURNAME/skywatch</string>
+
+  <key>StartCalendarInterval</key>
+  <array>
+    <dict>
+      <key>Hour</key><integer>6</integer>
+      <key>Minute</key><integer>30</integer>
+    </dict>
+    <dict>
+      <key>Hour</key><integer>16</integer>
+      <key>Minute</key><integer>30</integer>
+    </dict>
+  </array>
+
+  <key>StandardOutPath</key>
+  <string>/Users/YOURNAME/skywatch/logs/launchd.out.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/YOURNAME/skywatch/logs/launchd.err.log</string>
+
+  <!-- PATH for uv's python resolution; Tailscale IPs need no special setup. -->
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>/opt/homebrew/bin:/usr/bin:/bin:/sbin:/usr/sbin</string>
+  </dict>
+</dict>
+</plist>
