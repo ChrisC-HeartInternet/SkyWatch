@@ -378,12 +378,18 @@ def _vortex_chart(vortex: dict[str, Any]) -> str:
     parts = [
         svg.grid_and_axis(ys, ticks, ml, w - mr, ""),
         f'<line x1="{ml}" y1="{ys(0):.1f}" x2="{w - mr}" y2="{ys(0):.1f}" class="zero"/>',
-        svg.text(w - mr + 4, ys(0) + 4, "0 = reversal", "tick", "start"),
     ]
+    # Reference-line labels share the right margin; in summer the climatological
+    # normal sits within a metre per second of zero, so spread them apart.
+    ref_labels: list[tuple[float, str]] = [(ys(0), "0 = reversal")]
     if normal is not None:
         parts.append(svg.polyline([(xs(0), ys(normal)), (xs(len(fc) - 1), ys(normal))],
                                   "var(--neutral-band)", dash="5 4"))
-        parts.append(svg.text(w - mr + 4, ys(normal) + 4, "normal", "tick", "start"))
+        ref_labels.append((ys(normal), "normal"))
+    for (_y, label), ly in zip(
+        ref_labels, _spread_positions([y for y, _ in ref_labels], min_gap=12.0), strict=True
+    ):
+        parts.append(svg.text(w - mr + 4, ly + 4, label, "tick", "start"))
     parts.append(svg.polyline(pts, "var(--series-1)"))
     parts.append(svg.dot(*pts[0], "var(--series-1)", title=f"today: {fc[0]:+.1f} m/s"))
     parts.append(svg.text(ml, h - 6, "today", "tick", "start"))
