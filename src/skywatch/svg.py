@@ -37,10 +37,14 @@ def nice_ticks(lo: float, hi: float, n: int = 5) -> list[float]:
         step = m * mag
         if raw <= step:
             break
+    # The axis must COVER the data: first tick at or below lo, last tick at or
+    # above hi. Stopping at the last tick <= hi built axes too short, and any
+    # value between that tick and hi drew above the plot area (off the page).
     start = math.floor(lo / step) * step
+    end = math.ceil(hi / step - 1e-9) * step
     ticks = []
     t = start
-    while t <= hi + step * 0.01:
+    while t <= end + step * 0.01:
         ticks.append(round(t, 6))
         t += step
     return ticks
